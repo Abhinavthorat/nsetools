@@ -22,10 +22,12 @@
     SOFTWARE.
 
 """
-import ast 
+import ast
+import pandas as pd
 import re
 import json
 import zipfile
+import time
 import io
 import requests
 from dateutil import parser
@@ -48,25 +50,25 @@ class Nse(AbstractBaseExchange):
         self.session_refresh_interval = session_refresh_interval 
         self.create_session()
         self.get_quote_url = "https://www.nseindia.com/get-quotes/equity?symbol={code}"
-        self.stocks_csv_url = 'http://www1.nseindia.com/content/equities/EQUITY_L.csv'
-        self.top_gainer_url = 'http://www1.nseindia.com/live_market/dynaContent/live_analysis/gainers/niftyGainers1.json'
-        self.top_loser_url = 'http://www1.nseindia.com/live_market/dynaContent/live_analysis/losers/niftyLosers1.json'
+        self.stocks_csv_url = 'https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv'
+        self.top_gainer_url = 'https://www.nseindia.com//live_market/dynaContent/live_analysis/gainers/niftyGainers1.json'
+        self.top_loser_url = 'https://www.nseindia.com//live_market/dynaContent/live_analysis/losers/niftyLosers1.json'
         self.top_fno_gainer_url\
-            = 'https://www1.nseindia.com/live_market/dynaContent/live_analysis/gainers/fnoGainers1.json'
-        self.top_fno_loser_url = 'https://www1.nseindia.com/live_market/dynaContent/live_analysis/losers/fnoLosers1.json'
-        self.advances_declines_url = 'http://www1.nseindia.com/common/json/indicesAdvanceDeclines.json'
-        self.index_url="http://www1.nseindia.com/homepage/Indices1.json"
-        self.bhavcopy_base_url = "https://www1.nseindia.com/content/historical/EQUITIES/%s/%s/cm%s%s%sbhav.csv.zip"
+            = 'https://www.nseindia.com//live_market/dynaContent/live_analysis/gainers/fnoGainers1.json'
+        self.top_fno_loser_url = 'https://www.nseindia.com//live_market/dynaContent/live_analysis/losers/fnoLosers1.json'
+        self.advances_declines_url = 'https://www.nseindia.com//common/json/indicesAdvanceDeclines.json'
+        self.index_url="https://www.nseindia.com//homepage/Indices1.json"
+        self.bhavcopy_base_url = "https://www.nseindia.com//content/historical/EQUITIES/%s/%s/cm%s%s%sbhav.csv.zip"
         self.bhavcopy_base_filename = "cm%s%s%sbhav.csv"
         self.active_equity_monthly_url =\
-            "https://www1.nseindia.com/products/dynaContent/equities/equities/json/mostActiveMonthly.json"
-        self.year_high_url = "https://www1.nseindia.com/products/dynaContent/equities/equities/json/online52NewHigh.json"
-        self.year_low_url = "https://www1.nseindia.com/products/dynaContent/equities/equities/json/online52NewLow.json"
-        self.preopen_nifty_url = "https://www1.nseindia.com/live_market/dynaContent/live_analysis/pre_open/nifty.json"
-        self.preopen_fno_url = "https://www1.nseindia.com/live_market/dynaContent/live_analysis/pre_open/fo.json"
+            "https://www.nseindia.com//products/dynaContent/equities/equities/json/mostActiveMonthly.json"
+        self.year_high_url = "https://www.nseindia.com//products/dynaContent/equities/equities/json/online52NewHigh.json"
+        self.year_low_url = "https://www.nseindia.com//products/dynaContent/equities/equities/json/online52NewLow.json"
+        self.preopen_nifty_url = "https://www.nseindia.com//live_market/dynaContent/live_analysis/pre_open/nifty.json"
+        self.preopen_fno_url = "https://www.nseindia.com//live_market/dynaContent/live_analysis/pre_open/fo.json"
         self.preopen_niftybank_url =\
-            "https://www1.nseindia.com/live_market/dynaContent/live_analysis/pre_open/niftybank.json"
-        self.fno_lot_size_url = "https://www1.nseindia.com/content/fo/fo_mktlots.csv"
+            "https://www.nseindia.com//live_market/dynaContent/live_analysis/pre_open/niftybank.json"
+        self.fno_lot_size_url = "https://www.nseindia.com//content/fo/fo_mktlots.csv"
 
     def get_fno_lot_sizes(self, cached=True, as_json=False):
         """
@@ -95,32 +97,53 @@ class Nse(AbstractBaseExchange):
             self.__CODECACHE__ = res_dict
         return self.render_response(self.__CODECACHE__, as_json)
 
-    def get_stock_codes(self, cached=True, as_json=False):
+    def download_csv(self, local_filename='stock_data.csv', timeout=20, max_retries=5):
         """
-        returns a dictionary with key as stock code and value as stock name.
-        It also implements cache functionality and hits the server only
-        if user insists or cache is empty
-        :return: dict
+        Downloads the CSV file from the given URL and saves it locally.
+
+        :param local_filename: str, the filename for the downloaded CSV file
+        :param timeout: int, the maximum time to wait for a response
+        :param max_retries: int, the maximum number of retry attempts
+        :return: bool, True if download succeeded, False otherwise
         """
-        url = self.stocks_csv_url
-        req = "Request(url, None, self.headers)"
-        res_dict = {}
-        if cached is not True or self.__CODECACHE__ is None:
-            # raises HTTPError and URLError
-            res = self.opener.open(req)
-            if res is not None:
-                # for py3 compat covert byte file like object to
-                # string file like object
-                res = byte_adaptor(res)
-                for line in res.read().split('\n'):
-                    if line != '' and re.search(',', line):
-                        (code, name) = line.split(',')[0:2]
-                        res_dict[code] = name
-                    # else just skip the evaluation, line may not be a valid csv
-            else:
-                raise Exception('no response received')
-            self.__CODECACHE__ = res_dict
-        return self.render_response(self.__CODECACHE__, as_json)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        retries = 0
+        while retries < max_retries:
+            try:
+                response = requests.get(self.stocks_csv_url, headers=headers, timeout=timeout, stream=True)
+                response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
+
+                with open(local_filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+                return True
+            except (RequestException, HTTPError) as e:
+                print(f"Attempt {retries + 1} failed: {e}")
+                retries += 1
+                time.sleep(2 ** retries)  # Exponential backoff
+
+        return False
+
+    def get_stock_codes(self, local_filename='stock_data.csv'):
+        """
+        Downloads the CSV file from the given URL, reads it into a DataFrame, and returns the DataFrame.
+
+        :param local_filename: str, the filename for the downloaded CSV file
+        :return: DataFrame
+        """
+        if self.download_csv(local_filename):
+            try:
+                # Read the CSV file into a DataFrame
+                df = pd.read_csv(local_filename)
+                return df
+            except Exception as e:
+                print(f"Error occurred while reading CSV: {e}")
+        else:
+            print("Failed to download the CSV file after multiple attempts.")
 
     def is_valid_code(self, code):
         """
